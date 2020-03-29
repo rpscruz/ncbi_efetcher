@@ -1,11 +1,13 @@
 import xml.etree.ElementTree as ET
 import subprocess
 import logging
+import argparse
+import mmap
 import csv
 import re
 
-def query_and_get_result_count(query):
-    esearch_cmd = 'esearch -db nucleotide -query'.split()
+def query_and_get_result_count(query, database):
+    esearch_cmd = 'esearch -db {} -query'.format(database).split()
     esearch_cmd.append(query)
 
     out = subprocess.Popen(esearch_cmd, 
@@ -18,7 +20,7 @@ def query_and_get_result_count(query):
             search_tree = ET.fromstring(stdout)
 
             search_result_count = int(search_tree.find('Count').text)
-            logging.info('Successfully searched for {}. Yielded {} results.'.format(query, search_result_count))
+            logging.info('Successfully searched for {} from {} database. Yielded {} results.'.format(query, database, search_result_count))
             return search_result_count
         except:
             logging.debug("Unsuccessful search. stderr = None; stdout = {}".format(stdout)
@@ -28,19 +30,21 @@ def query_and_get_result_count(query):
         logging.debug("Unsuccessful search. stderr = {}".format(stderr))
         return
 
-def new_results_available(search_result_count, log_filename):
-    search_result_count_regex = r'Fetched ([0-9]+) files.'
+def new_results_available(query, database, search_result_count, log_filename):
+    search_result_count_regex = 'Successfully fetched fasta files for query {} from {} database. Fetched {} files.'.format(query, database, search_result_count).encode()
 
     try:
-        log_last_line = subprocess.check_output(['tail', '-2', log_filename]).decode('utf-8')
-        prev_search_result_count = int(re.search(search_result_count_regex, log_last_line, re.IGNORECASE)[1])
-        return search_result_count > prev_search_result_count
+        with open(log_filename) as f:
+            s = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+            return False if s.find(search_result_count_regex) > 0 else True
     except:
+        raise
         logging.info("No previous search results to check. ")
         return True
 
-def query_and_get_results(query, result_count, fetched_filename):
-    esearch_cmd = 'esearch -db nucleotide -query'.split()
+def query_and_get_results(query, database, result_count, fetched_filename):
+    esearch_cmd = 'esearch -db {} -query'.format(database).split()
+
     esearch_cmd.append(query)
     efetch_cmd = 'efetch -format fasta'.split()
 
@@ -56,27 +60,35 @@ def query_and_get_results(query, result_count, fetched_filename):
 
     if efetch_fasta_stderr == None:
         open(fetched_filename, 'wb').write(efetch_fasta_stdout)
-        logging.info('Successfull fetched fasta files for query {}. Fetched {} files.'.format(query, result_count))
+        logging.info('Successfully fetched fasta files for query {} from {} database. Fetched {} files.'.format(query, database, result_count))
     else:
         logging.debug("Unsuccessful fetch. stderr = {}".format(stderr))
 
     return
 
-def main():
-    query = '"betacoronavirus" AND "complete genome"'
-    log_filename = 'NCBI_efetcher.log'
-    fasta_filename = 'all_genomes.fasta'
+def main(log_filename=None):
+    parser = argparse.ArgumentParser(description='Please note the following acceptable command-line options for this script:')
+    parser.add_argument("-l", default='NCBI_efetcher.log', help="Log filename (default: NCBI_efetcher.log)")
+    parser.add_argument("-f", default='all_genomes_betacoronavirus.fasta', help="Fasta filename (default: all_genomes_betacoronavirus.fasta)")
+    parser.add_argument("-q", default='"betacoronavirus" AND "complete genome"', help='Query for Database (default: "betacoronavirus" AND "complete genome")')
+    parser.add_argument("-db", default='nucleotide', help="Database (default: nucleotide)")
+
+    args = parser.parse_args()
+    log_filename = args.l
+    fasta_filename = args.f
+    query = args.q
+    database = args.db
 
     log_format = FORMAT = '%(asctime)s : %(levelname)s : %(message)s'
     logging.basicConfig(filename=log_filename, level=logging.INFO,
         format=log_format)
     
-    search_result_count = query_and_get_result_count(query)
-    new_results_are_available = new_results_available(search_result_count, log_filename)
+    search_result_count = query_and_get_result_count(query, database)
+    new_results_are_available = new_results_available(query, database, search_result_count, log_filename)
 
     if new_results_are_available:
         logging.info("Additional genomes available. Fetching additional genomes.")
-        query_and_get_results(query, search_result_count, fasta_filename)
+        query_and_get_results(query, database, search_result_count, fasta_filename)
     else:
         logging.info('No new results to fetch. Perviously fetched {} files.'.format(search_result_count))
 
